@@ -321,6 +321,7 @@ impl minicbor::encode::Encode<EncodingContext> for VariantWrapper {
             }
             VariantType::CALLABLE => {
                 let callable = self.0.to::<Callable>();
+                ctx.buffer.clear();
                 let ok = callable.call(&[ctx.buffer.to_variant()]);
                 if !ok.is_nil() {
                     push_warning(&[Variant::from("Callables should return nothing")]);
