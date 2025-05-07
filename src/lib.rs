@@ -108,6 +108,21 @@ impl Cbor {
         }
     }
 
+    /// Helper for encoding functions.
+    fn _encode_into_helper<T: minicbor::Encode<EncodingContext>>(
+        error_prefix: &str,
+        writer: &mut PackedByteArrayWriter,
+        obj: T,
+    ) -> bool {
+        match minicbor::encode_with(obj, writer, &mut EncodingContext::default()) {
+            Ok(()) => true,
+            Err(err) => {
+                push_error(&[Variant::from(format!("{error_prefix}: {err}"))]);
+                false
+            }
+        }
+    }
+
     /// Encodes the provided variant as a CBOR byte string.
     ///
     /// The string is pushed to the end of the provided [`PackedByteArray`].
@@ -119,20 +134,46 @@ impl Cbor {
     #[func]
     pub fn encode_into(variant: Variant, output: PackedByteArray) -> bool {
         let mut writer: PackedByteArrayWriter = output.into();
-        match minicbor::encode_with(
-            VariantWrapper(variant),
-            &mut writer,
-            &mut EncodingContext::default(),
-        ) {
-            Ok(()) => true,
-            Err(err) => {
-                push_error(&[
-                    Variant::from("CBOR.encode_into: "),
-                    Variant::from(err.to_string()),
-                ]);
-                false
+        Self::_encode_into_helper("CBOR.encode_into", &mut writer, VariantWrapper(variant))
+    }
+
+    /// Encodes a tagged value as a tagged CBOR object.
+    ///
+    /// This works exactly like [`encode_into`] except that the whole value is wrapped
+    /// in a semantic tag before being encoded.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the variant to the provided
+    /// array, the function returns `false` and logs the error.
+    #[func]
+    pub fn encode_tagged_into(tag: i64, variant: Variant, output: PackedByteArray) -> bool {
+        struct WithTag {
+            tag: i64,
+            value: Variant,
+        }
+
+        impl minicbor::Encode<EncodingContext> for WithTag {
+            fn encode<W: minicbor::encode::Write>(
+                &self,
+                e: &mut minicbor::Encoder<W>,
+                ctx: &mut EncodingContext,
+            ) -> Result<(), minicbor::encode::Error<W::Error>> {
+                e.tag(minicbor::data::Tag::new(self.tag as u64))?;
+                e.encode_with(VariantWrapper(self.value.clone()), ctx)?;
+                Ok(())
             }
         }
+
+        let mut writer: PackedByteArrayWriter = output.into();
+        Self::_encode_into_helper(
+            "CBOR.encode_tagged_into",
+            &mut writer,
+            WithTag {
+                tag,
+                value: variant,
+            },
+        )
     }
 
     /// Encodes the provided variant as a CBOR byte string.
@@ -145,19 +186,10 @@ impl Cbor {
     #[func]
     pub fn encode(variant: Variant) -> PackedByteArray {
         let mut writer = PackedByteArrayWriter::default();
-        match minicbor::encode_with(
-            VariantWrapper(variant),
-            &mut writer,
-            &mut EncodingContext::default(),
-        ) {
-            Ok(()) => writer.into(),
-            Err(err) => {
-                push_error(&[
-                    Variant::from("CBOR.decode_bytes: "),
-                    Variant::from(err.to_string()),
-                ]);
-                PackedByteArray::new()
-            }
+        if Self::_encode_into_helper("CBOR.encode", &mut writer, VariantWrapper(variant)) {
+            writer.into()
+        } else {
+            PackedByteArray::default()
         }
     }
 
