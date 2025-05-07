@@ -1,4 +1,7 @@
-use godot::{global::push_error, prelude::*};
+use godot::{
+    global::{push_error, push_warning},
+    prelude::*,
+};
 
 struct GodotCbor;
 
@@ -9,12 +12,75 @@ unsafe impl ExtensionLibrary for GodotCbor {
     }
 }
 
+/// Contains a collection of callback that hook into the default decoding process
+/// to allow for custom decoding of objects.
+#[derive(Debug, GodotClass)]
+#[class(base = RefCounted, init)]
+struct CborDecodeReplacer {
+    base: Base<RefCounted>,
+}
+
+#[godot_api]
+impl CborDecodeReplacer {
+    /// Replaces the provided [`Array`] with something else.
+    #[func(virtual)]
+    pub fn replace_array(&self, array: VariantArray) -> Variant {
+        array.to_variant()
+    }
+
+    /// Replaces the provided [`Dictionary`] with something else.
+    #[func(virtual)]
+    pub fn replace_dictionary(&self, dict: Dictionary) -> Variant {
+        dict.to_variant()
+    }
+
+    /// Replaces the provided boolean with something else.
+    #[func(virtual)]
+    pub fn replace_bool(&self, value: bool) -> Variant {
+        value.to_variant()
+    }
+
+    /// Replaces the provided [`PackedByteArray`] with something else.
+    #[func(virtual)]
+    pub fn replace_packed_byte_array(&self, array: PackedByteArray) -> Variant {
+        array.to_variant()
+    }
+
+    /// Replaces the provided floating point number with something else.
+    #[func(virtual)]
+    pub fn replace_float(&self, value: f64) -> Variant {
+        value.to_variant()
+    }
+
+    /// Replaces the provided [`String`] with something else.
+    #[func(virtual)]
+    pub fn replace_string(&self, string: String) -> Variant {
+        string.to_variant()
+    }
+
+    /// Replaces the provided [`PackedByteArray`] with something else.
+    #[func(virtual)]
+    pub fn replace_packed_string_array(&self, array: PackedStringArray) -> Variant {
+        array.to_variant()
+    }
+
+    /// Replaces the provided tagged value with something else.
+    #[func(virtual)]
+    pub fn replace_tagged(&self, tag: i64, value: Variant) -> Variant {
+        _ = tag;
+        value.to_variant()
+    }
+}
+
 #[derive(Debug, GodotClass)]
 #[class(base = Resource, init, rename = CBOR)]
 struct Cbor {
     base: Base<Resource>,
     error: Option<minicbor::decode::Error>,
 
+    /// The replacer instance that will be used to replace the decoded values.
+    #[var]
+    replacer: Gd<CborDecodeReplacer>,
     /// The result of parsing the CBOR Data.
     #[var]
     data: Variant,
@@ -53,7 +119,11 @@ impl Cbor {
     #[func]
     pub fn encode_into(variant: Variant, output: PackedByteArray) -> bool {
         let mut writer: PackedByteArrayWriter = output.into();
-        match minicbor::encode(VariantWrapper(variant), &mut writer) {
+        match minicbor::encode_with(
+            VariantWrapper(variant),
+            &mut writer,
+            &mut EncodingContext::default(),
+        ) {
             Ok(()) => true,
             Err(err) => {
                 push_error(&[
@@ -75,7 +145,11 @@ impl Cbor {
     #[func]
     pub fn encode(variant: Variant) -> PackedByteArray {
         let mut writer = PackedByteArrayWriter::default();
-        match minicbor::encode(VariantWrapper(variant), &mut writer) {
+        match minicbor::encode_with(
+            VariantWrapper(variant),
+            &mut writer,
+            &mut EncodingContext::default(),
+        ) {
             Ok(()) => writer.into(),
             Err(err) => {
                 push_error(&[
@@ -94,7 +168,11 @@ impl Cbor {
     /// Errors are logged and cause the function to produce a null value.
     #[func]
     pub fn decode_bytes(data: PackedByteArray) -> Variant {
-        match minicbor::decode(data.as_slice()) {
+        match minicbor::decode_with(data.as_slice(), &mut {
+            DecodingContext {
+                replacer: CborDecodeReplacer::new_gd(),
+            }
+        }) {
             Ok(VariantWrapper(variant)) => variant,
             Err(err) => {
                 push_error(&[
@@ -102,6 +180,57 @@ impl Cbor {
                     Variant::from(err.to_string()),
                 ]);
                 Variant::nil()
+            }
+        }
+    }
+
+    /// Prints the tokens of the provided [`PackedByteArray`] to the console.
+    ///
+    /// This can be used to debug an existing CBOR byte string.
+    #[func]
+    pub fn debug_decode_bytes(data: PackedByteArray) {
+        let mut decoder = minicbor::Decoder::new(data.as_slice());
+        let mut stack: Vec<u64> = Vec::new();
+        godot_print!("Tokens:");
+        for result in decoder.tokens() {
+            use minicbor::data::Token;
+
+            match result {
+                Ok(token) => {
+                    godot_print!("{: >2$} - {:?}", "", token, stack.len() * 2);
+
+                    stack.pop_if(|n| {
+                        if *n == u64::MAX {
+                            return false;
+                        }
+
+                        *n = n.saturating_sub(1);
+                        *n == 0
+                    });
+
+                    match token {
+                        Token::Array(n) => {
+                            stack.push(n);
+                        }
+                        Token::BeginArray => {
+                            stack.push(u64::MAX);
+                        }
+                        Token::Break => {
+                            stack.pop();
+                        }
+                        Token::Map(n) => {
+                            stack.push(n + 2);
+                        }
+                        Token::BeginMap => {
+                            stack.push(u64::MAX);
+                        }
+                        _ => {}
+                    }
+                }
+                Err(err) => {
+                    godot_print!("Error: {:?}", err);
+                    break;
+                }
             }
         }
     }
@@ -114,34 +243,33 @@ impl Cbor {
     /// through associated methods.
     #[func]
     pub fn decode(&mut self, data: PackedByteArray) {
-        match minicbor::decode(data.as_slice()) {
+        match minicbor::decode_with(
+            data.as_slice(),
+            &mut DecodingContext {
+                replacer: self.replacer.clone(),
+            },
+        ) {
             Ok(VariantWrapper(variant)) => self.data = variant,
             Err(err) => self.error = Some(err),
         }
     }
 }
 
-/// A tagged value.
-#[derive(Debug, GodotClass)]
-#[class(base = RefCounted, init)]
-struct Tagged {
-    base: Base<RefCounted>,
-    /// The semantic tag of the value.
-    #[var]
-    tag: i64,
-    /// The value that is tagged.
-    #[var]
-    value: Variant,
+/// The context used to encode data.
+#[derive(Default)]
+pub struct EncodingContext {
+    /// The array that will be passed to `_cbor_encode` methods.
+    buffer: PackedByteArray,
 }
 
 /// A wrapper around a godot [`Variant`] that implements the decoding trait.
 struct VariantWrapper(pub Variant);
 
-impl<C> minicbor::encode::Encode<C> for VariantWrapper {
+impl minicbor::encode::Encode<EncodingContext> for VariantWrapper {
     fn encode<W: minicbor::encode::Write>(
         &self,
         e: &mut minicbor::Encoder<W>,
-        ctx: &mut C,
+        ctx: &mut EncodingContext,
     ) -> Result<(), minicbor::encode::Error<W::Error>> {
         match self.0.get_type() {
             VariantType::NIL => {
@@ -182,9 +310,15 @@ impl<C> minicbor::encode::Encode<C> for VariantWrapper {
                 e.bytes(array.as_slice())?;
                 Ok(())
             }
-            VariantType::STRING | VariantType::STRING_NAME => {
+            VariantType::STRING => {
                 let string = self.0.to::<String>();
                 e.str(&string)?;
+                Ok(())
+            }
+            VariantType::STRING_NAME => {
+                let s = self.0.to::<StringName>();
+                let s: String = s.into();
+                e.str(&s)?;
                 Ok(())
             }
             VariantType::PACKED_STRING_ARRAY => {
@@ -196,8 +330,42 @@ impl<C> minicbor::encode::Encode<C> for VariantWrapper {
                 }
                 Ok(())
             }
+            VariantType::OBJECT => {
+                let mut object = self.0.to::<Gd<Object>>();
+                if object.has_method("_cbor_encode") {
+                    ctx.buffer.clear();
+                    match object.try_call("_cbor_encode", &[ctx.buffer.to_variant()]) {
+                        Ok(ok) => {
+                            if !ok.is_nil() {
+                                push_warning(&[Variant::from(
+                                    "`_encode_char` should return nothing",
+                                )]);
+                            }
+                            Ok(())
+                        }
+                        Err(err) => Err(minicbor::encode::Error::message(format!(
+                            "Failed to call `_cbor_encode(buf: PackedByteArray) -> void: {err}",
+                        ))),
+                    }
+                } else if object.has_method("_cbor_replace") {
+                    match object.try_call("_cbor_replace", &[]) {
+                        Ok(ok) => {
+                            e.encode_with(Self(ok), ctx)?;
+                            Ok(())
+                        }
+                        Err(err) => Err(minicbor::encode::Error::message(format!(
+                            "Failed to call `_cbor_replace() -> Variant: {err}",
+                        ))),
+                    }
+                } else {
+                    Err(minicbor::encode::Error::message(format!(
+                        "Object `{}` does not implement `_cbor_encode(buf: PackedByteArray) -> void`",
+                        object.get_class()
+                    )))
+                }
+            }
             _ => Err(minicbor::encode::Error::message(format!(
-                "Type {:?} cannot be encoded",
+                "Type {:?} cannot be encoded as CBOR",
                 self.0.get_type()
             ))),
         }
@@ -209,8 +377,17 @@ impl<C> minicbor::encode::Encode<C> for VariantWrapper {
     }
 }
 
-impl<C> minicbor::decode::Decode<'_, C> for VariantWrapper {
-    fn decode(d: &mut minicbor::Decoder<'_>, ctx: &mut C) -> Result<Self, minicbor::decode::Error> {
+/// The context that is passed to the decoding process.
+pub struct DecodingContext {
+    /// The decode replacer that will be used to replace the decoded values.
+    replacer: Gd<CborDecodeReplacer>,
+}
+
+impl minicbor::decode::Decode<'_, DecodingContext> for VariantWrapper {
+    fn decode(
+        d: &mut minicbor::Decoder<'_>,
+        ctx: &mut DecodingContext,
+    ) -> Result<Self, minicbor::decode::Error> {
         use minicbor::data::Type;
 
         match d.datatype()? {
@@ -219,7 +396,7 @@ impl<C> minicbor::decode::Decode<'_, C> for VariantWrapper {
                 for item in d.array_iter_with::<_, Self>(ctx)? {
                     array.push(&item?.0);
                 }
-                Ok(Self(Variant::from(array)))
+                Ok(Self(ctx.replacer.bind().replace_array(array)))
             }
             Type::Map | Type::MapIndef => {
                 let mut dict = Dictionary::new();
@@ -227,15 +404,18 @@ impl<C> minicbor::decode::Decode<'_, C> for VariantWrapper {
                     let (key, value) = item?;
                     dict.set(key.0, value.0);
                 }
-                Ok(Self(Variant::from(dict)))
+                Ok(Self(ctx.replacer.bind().replace_dictionary(dict)))
             }
             Type::Bool => {
                 let value = d.bool()?;
-                Ok(Self(Variant::from(value)))
+                Ok(Self(ctx.replacer.bind().replace_bool(value)))
             }
             Type::Bytes => {
                 let bytes = d.bytes()?;
-                Ok(Self(Variant::from(bytes)))
+                let mut array = PackedByteArray::new();
+                array.resize(bytes.len());
+                array.as_mut_slice().copy_from_slice(bytes);
+                Ok(Self(ctx.replacer.bind().replace_packed_byte_array(array)))
             }
             Type::BytesIndef => {
                 let count = d
@@ -250,18 +430,19 @@ impl<C> minicbor::decode::Decode<'_, C> for VariantWrapper {
                     array.as_mut_slice()[cursor..cursor + slice.len()].copy_from_slice(slice);
                     cursor += slice.len();
                 }
-                Ok(Self(Variant::from(array)))
+                Ok(Self(ctx.replacer.bind().replace_packed_byte_array(array)))
             }
-            Type::F16 => Err(minicbor::decode::Error::message(
-                "received an unsupported half-precision floating-point number",
-            )),
+            Type::F16 => {
+                let v = d.f16()?;
+                Ok(Self(ctx.replacer.bind().replace_float(v as f64)))
+            }
             Type::F32 => {
                 let v = d.f32()?;
-                Ok(Self(Variant::from(v)))
+                Ok(Self(ctx.replacer.bind().replace_float(v as f64)))
             }
             Type::F64 => {
                 let v = d.f64()?;
-                Ok(Self(Variant::from(v)))
+                Ok(Self(ctx.replacer.bind().replace_float(v)))
             }
             Type::Int
             | Type::I8
@@ -291,10 +472,8 @@ impl<C> minicbor::decode::Decode<'_, C> for VariantWrapper {
             Type::Undefined => Ok(Self(Variant::nil())),
             Type::Tag => {
                 let tag = d.tag()?.as_u64() as i64;
-                let value = d.decode_with::<C, Self>(ctx)?.0;
-                Ok(Self(
-                    Gd::from_init_fn(|base| Tagged { base, tag, value }).to_variant(),
-                ))
+                let value = d.decode_with::<_, Self>(ctx)?.0;
+                Ok(Self(ctx.replacer.bind().replace_tagged(tag, value)))
             }
             Type::Simple | Type::Break | Type::Unknown(_) => {
                 Err(minicbor::decode::Error::message("unknown value received"))
@@ -347,6 +526,7 @@ impl minicbor::encode::Write for PackedByteArrayWriter {
         }
 
         self.buffer.as_mut_slice()[self.len..self.len + buf.len()].copy_from_slice(buf);
+        self.len += buf.len();
         Ok(())
     }
 }

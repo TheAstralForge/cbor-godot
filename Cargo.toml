@@ -9,4 +9,4 @@ name = "cbor"
 
 [dependencies]
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
-minicbor = { version = "0.26", features = ["std"] }
+minicbor = { version = "0.26", features = ["std", "half"] }
