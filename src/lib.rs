@@ -188,51 +188,8 @@ impl Cbor {
     ///
     /// This can be used to debug an existing CBOR byte string.
     #[func]
-    pub fn debug_decode_bytes(data: PackedByteArray) {
-        let mut decoder = minicbor::Decoder::new(data.as_slice());
-        let mut stack: Vec<u64> = Vec::new();
-        godot_print!("Tokens:");
-        for result in decoder.tokens() {
-            use minicbor::data::Token;
-
-            match result {
-                Ok(token) => {
-                    godot_print!("{: >2$} - {:?}", "", token, stack.len() * 2);
-
-                    stack.pop_if(|n| {
-                        if *n == u64::MAX {
-                            return false;
-                        }
-
-                        *n = n.saturating_sub(1);
-                        *n == 0
-                    });
-
-                    match token {
-                        Token::Array(n) => {
-                            stack.push(n);
-                        }
-                        Token::BeginArray => {
-                            stack.push(u64::MAX);
-                        }
-                        Token::Break => {
-                            stack.pop();
-                        }
-                        Token::Map(n) => {
-                            stack.push(n + 2);
-                        }
-                        Token::BeginMap => {
-                            stack.push(u64::MAX);
-                        }
-                        _ => {}
-                    }
-                }
-                Err(err) => {
-                    godot_print!("Error: {:?}", err);
-                    break;
-                }
-            }
-        }
+    pub fn debug_bytes(data: PackedByteArray) -> String {
+        minicbor::Decoder::new(data.as_slice()).tokens().to_string()
     }
 
     /// Decodes the provided [`PackedByteArray`] into a [`Variant`].
@@ -432,10 +389,9 @@ impl minicbor::decode::Decode<'_, DecodingContext> for VariantWrapper {
                 }
                 Ok(Self(ctx.replacer.bind().replace_packed_byte_array(array)))
             }
-            Type::F16 => {
-                let v = d.f16()?;
-                Ok(Self(ctx.replacer.bind().replace_float(v as f64)))
-            }
+            Type::F16 => Err(minicbor::decode::Error::message(
+                "CBOR does not support half-precision floats",
+            )),
             Type::F32 => {
                 let v = d.f32()?;
                 Ok(Self(ctx.replacer.bind().replace_float(v as f64)))
