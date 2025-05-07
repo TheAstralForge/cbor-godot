@@ -1,0 +1,12 @@
+[package]
+name = "godot-cbor"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+name = "cbor"
+
+[dependencies]
+godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
+minicbor = { version = "0.26", features = ["std"] }
