@@ -287,6 +287,14 @@ impl minicbor::encode::Encode<EncodingContext> for VariantWrapper {
                 }
                 Ok(())
             }
+            VariantType::CALLABLE => {
+                let callable = self.0.to::<Callable>();
+                let ok = callable.call(&[ctx.buffer.to_variant()]);
+                if !ok.is_nil() {
+                    push_warning(&[Variant::from("Callables should return nothing")]);
+                }
+                Ok(())
+            }
             VariantType::OBJECT => {
                 let mut object = self.0.to::<Gd<Object>>();
                 if object.has_method("_cbor_encode") {
