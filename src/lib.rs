@@ -1,7 +1,4 @@
-use godot::{
-    global::{push_error, push_warning},
-    prelude::*,
-};
+use godot::prelude::*;
 
 struct GodotCbor;
 
@@ -9,6 +6,336 @@ struct GodotCbor;
 unsafe impl ExtensionLibrary for GodotCbor {
     fn min_level() -> InitLevel {
         InitLevel::Core
+    }
+}
+
+/// A CBOR encoder that can be used to encode data into a CBOR byte string.
+#[derive(GodotClass)]
+#[class(base = RefCounted, init)]
+struct CborEncoder {
+    base: Base<RefCounted>,
+
+    /// The last error that occurred during encoding.
+    last_error: Option<minicbor::encode::Error<std::convert::Infallible>>,
+
+    /// The underlying buffer that we are writing to.
+    #[init(val = minicbor::Encoder::new(PackedByteArrayWriter::default()))]
+    encoder: minicbor::Encoder<PackedByteArrayWriter>,
+}
+
+#[godot_api]
+impl CborEncoder {
+    /// Returns the underlying packed byte array.
+    ///
+    /// Note that the complete buffer might not be written to yet. You can use
+    /// the `size()` method to get the actual number of bytes written.
+    ///
+    /// Alternatively, you can use `finish()` to return the resized buffer.
+    #[func]
+    pub fn get_buffer(&self) -> PackedByteArray {
+        self.encoder.writer().buffer.clone()
+    }
+
+    /// Returns the number of bytes written to the buffer.
+    #[func]
+    pub fn size(&self) -> u64 {
+        self.encoder.writer().len as u64
+    }
+
+    /// Finishes the encoding process and returns the result as a packed byte array.
+    ///
+    /// This resets the encoder.
+    #[func]
+    pub fn finish(&mut self) -> PackedByteArray {
+        std::mem::take(self.encoder.writer_mut()).into()
+    }
+
+    /// Returns a message describing the last error that occurred during encoding.
+    #[func]
+    pub fn error_message(&self) -> GString {
+        match self.last_error.as_ref() {
+            Some(err) => err.to_string().into(),
+            None => GString::default(),
+        }
+    }
+
+    /// Resets the encoder to its initial state.
+    #[func]
+    pub fn reset(&mut self) {
+        self.encoder.writer_mut().len = 0;
+    }
+
+    /// Encodes an integer value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the value, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn int(&mut self, value: i64) -> bool {
+        match self.encoder.i64(value) {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Encodes a floating point value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the value, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn float(&mut self, value: f64) -> bool {
+        match self.encoder.f64(value) {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Encodes a boolean value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the value, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn bool(&mut self, value: bool) -> bool {
+        match self.encoder.bool(value) {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Encodes a string value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the value, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn string(&mut self, value: String) -> bool {
+        match self.encoder.str(&value) {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Encodes a string name value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the value, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn string_name(&mut self, value: StringName) -> bool {
+        let s: String = value.into();
+        match self.encoder.str(&s) {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Encodes a byte array value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the value, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn bytes(&mut self, value: PackedByteArray) -> bool {
+        match self.encoder.bytes(value.as_slice()) {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Encodes a [`Variant`] value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the tag, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn encode(&mut self, value: Variant) -> bool {
+        match self
+            .encoder
+            .encode_with(VariantWrapper(value), &mut EncodingContext::default())
+        {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Encodes a tag without an associated value.
+    ///
+    /// The caller is responsible for ensuring that a tag is added to the
+    /// buffer after the tag is encoded.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the tag, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn tag(&mut self, tag: i64) -> bool {
+        match self.encoder.tag(minicbor::data::Tag::new(tag as u64)) {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Starts a new array in the encoder.
+    ///
+    /// The next `size` values will be encoded as part of the array.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while starting the array, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn array(&mut self, size: u64) -> bool {
+        match self.encoder.array(size) {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Starts a new map in the encoder.
+    ///
+    /// The next `size` key-value pairs will be encoded as part of the map.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while starting the map, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn map(&mut self, size: u64) -> bool {
+        match self.encoder.map(size) {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Begins an indefinite array in the encoder.
+    ///
+    /// The array will continue until `end()` is called.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while starting the array, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn begin_array(&mut self) -> bool {
+        match self.encoder.begin_array() {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Begins an indefinite map in the encoder.
+    ///
+    /// The map will continue until `end()` is called.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while starting the map, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn begin_map(&mut self) -> bool {
+        match self.encoder.begin_map() {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Ends the current array or map in the encoder.
+    ///
+    /// This function should be called after all elements of the array or map
+    /// have been added.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while ending the array or map, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn end(&mut self) -> bool {
+        match self.encoder.end() {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Encodes the `null` value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the `null` value, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func(rename = "nil")]
+    pub fn null(&mut self) -> bool {
+        match self.encoder.null() {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Encodes the `undefined` value.
+    ///
+    /// # Errors
+    ///
+    /// If an error occurs while encoding the `undefined` value, the function returns
+    /// `false` and the error can be accessed through the `error_message` method.
+    #[func]
+    pub fn undefined(&mut self) -> bool {
+        match self.encoder.undefined() {
+            Ok(_) => true,
+            Err(err) => {
+                self.last_error = Some(err);
+                false
+            }
+        }
     }
 }
 
@@ -100,9 +427,7 @@ impl Cbor {
         match self.error.as_ref() {
             Some(err) => err.to_string().into(),
             None => {
-                push_error(&[Variant::from(
-                    "Called `CBOR.error_message` when no error is present",
-                )]);
+                godot_error!("Called `CBOR.error_message` when no error is present");
                 GString::default()
             }
         }
@@ -117,63 +442,10 @@ impl Cbor {
         match minicbor::encode_with(obj, writer, &mut EncodingContext::default()) {
             Ok(()) => true,
             Err(err) => {
-                push_error(&[Variant::from(format!("{error_prefix}: {err}"))]);
+                godot_error!("{error_prefix}: {err}");
                 false
             }
         }
-    }
-
-    /// Encodes the provided variant as a CBOR byte string.
-    ///
-    /// The string is pushed to the end of the provided [`PackedByteArray`].
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs while encoding the variant to the provided
-    /// array, the function returns `false` and logs the error.
-    #[func]
-    pub fn encode_into(variant: Variant, output: PackedByteArray) -> bool {
-        let mut writer: PackedByteArrayWriter = output.into();
-        Self::_encode_into_helper("CBOR.encode_into", &mut writer, VariantWrapper(variant))
-    }
-
-    /// Encodes a tagged value as a tagged CBOR object.
-    ///
-    /// This works exactly like [`encode_into`] except that the whole value is wrapped
-    /// in a semantic tag before being encoded.
-    ///
-    /// # Errors
-    ///
-    /// If an error occurs while encoding the variant to the provided
-    /// array, the function returns `false` and logs the error.
-    #[func]
-    pub fn encode_tagged_into(tag: i64, variant: Variant, output: PackedByteArray) -> bool {
-        struct WithTag {
-            tag: i64,
-            value: Variant,
-        }
-
-        impl minicbor::Encode<EncodingContext> for WithTag {
-            fn encode<W: minicbor::encode::Write>(
-                &self,
-                e: &mut minicbor::Encoder<W>,
-                ctx: &mut EncodingContext,
-            ) -> Result<(), minicbor::encode::Error<W::Error>> {
-                e.tag(minicbor::data::Tag::new(self.tag as u64))?;
-                e.encode_with(VariantWrapper(self.value.clone()), ctx)?;
-                Ok(())
-            }
-        }
-
-        let mut writer: PackedByteArrayWriter = output.into();
-        Self::_encode_into_helper(
-            "CBOR.encode_tagged_into",
-            &mut writer,
-            WithTag {
-                tag,
-                value: variant,
-            },
-        )
     }
 
     /// Encodes the provided variant as a CBOR byte string.
@@ -207,10 +479,7 @@ impl Cbor {
         }) {
             Ok(VariantWrapper(variant)) => variant,
             Err(err) => {
-                push_error(&[
-                    Variant::from("CBOR.decode_bytes: "),
-                    Variant::from(err.to_string()),
-                ]);
+                godot_error!("CBOR.decode_bytes: {err}");
                 Variant::nil()
             }
         }
@@ -248,11 +517,17 @@ impl Cbor {
 #[derive(Default)]
 pub struct EncodingContext {
     /// The array that will be passed to `_cbor_encode` methods.
-    buffer: PackedByteArray,
+    encoder: Gd<CborEncoder>,
 }
 
 /// A wrapper around a godot [`Variant`] that implements the decoding trait.
 struct VariantWrapper(pub Variant);
+
+macro_rules! encode_err {
+    ($msg:literal $(, $args:expr)* $(,)?) => {
+        Err(minicbor::encode::Error::message(format_args!($msg $(, $args)*)))
+    };
+}
 
 impl minicbor::encode::Encode<EncodingContext> for VariantWrapper {
     fn encode<W: minicbor::encode::Write>(
@@ -321,51 +596,48 @@ impl minicbor::encode::Encode<EncodingContext> for VariantWrapper {
             }
             VariantType::CALLABLE => {
                 let callable = self.0.to::<Callable>();
-                ctx.buffer.clear();
-                let ok = callable.call(&[ctx.buffer.to_variant()]);
-                if !ok.is_nil() {
-                    push_warning(&[Variant::from("Callables should return nothing")]);
+                ctx.encoder.bind_mut().reset();
+                let ok = callable.call(&[ctx.encoder.to_variant()]);
+                if let Ok(msg) = ok.try_to::<String>() {
+                    return Err(minicbor::encode::Error::message(msg));
+                } else if !ok.is_nil() {
+                    godot_warn!("Callables should return nothing or an error message");
                 }
+                e.writer_mut()
+                    .write_all(ctx.encoder.bind().encoder.writer().as_slice())
+                    .map_err(minicbor::encode::Error::write)?;
                 Ok(())
             }
             VariantType::OBJECT => {
                 let mut object = self.0.to::<Gd<Object>>();
                 if object.has_method("_cbor_encode") {
-                    ctx.buffer.clear();
-                    match object.try_call("_cbor_encode", &[ctx.buffer.to_variant()]) {
+                    ctx.encoder.bind_mut().reset();
+                    match object.try_call("_cbor_encode", &[ctx.encoder.to_variant()]) {
                         Ok(ok) => {
-                            if !ok.is_nil() {
-                                push_warning(&[Variant::from(
-                                    "`_encode_char` should return nothing",
-                                )]);
+                            if let Ok(msg) = ok.try_to::<String>() {
+                                return Err(minicbor::encode::Error::message(msg));
+                            } else if !ok.is_nil() {
+                                godot_warn!(
+                                    "`_encode_char` should return nothing or an error message"
+                                );
                             }
+                            e.writer_mut()
+                                .write_all(ctx.encoder.bind().encoder.writer().as_slice())
+                                .map_err(minicbor::encode::Error::write)?;
                             Ok(())
                         }
-                        Err(err) => Err(minicbor::encode::Error::message(format!(
-                            "Failed to call `_cbor_encode(buf: PackedByteArray) -> void: {err}",
-                        ))),
-                    }
-                } else if object.has_method("_cbor_replace") {
-                    match object.try_call("_cbor_replace", &[]) {
-                        Ok(ok) => {
-                            e.encode_with(Self(ok), ctx)?;
-                            Ok(())
-                        }
-                        Err(err) => Err(minicbor::encode::Error::message(format!(
-                            "Failed to call `_cbor_replace() -> Variant: {err}",
-                        ))),
+                        Err(err) => encode_err!(
+                            "Failed to call `_cbor_encode(buf: PackedByteArray) -> void: {err}"
+                        ),
                     }
                 } else {
-                    Err(minicbor::encode::Error::message(format!(
+                    encode_err!(
                         "Object `{}` does not implement `_cbor_encode(buf: PackedByteArray) -> void`",
                         object.get_class()
-                    )))
+                    )
                 }
             }
-            _ => Err(minicbor::encode::Error::message(format!(
-                "Type {:?} cannot be encoded as CBOR",
-                self.0.get_type()
-            ))),
+            _ => encode_err!("Type {:?} cannot be encoded as CBOR", self.0.get_type()),
         }
     }
 
@@ -379,6 +651,12 @@ impl minicbor::encode::Encode<EncodingContext> for VariantWrapper {
 pub struct DecodingContext {
     /// The decode replacer that will be used to replace the decoded values.
     replacer: Gd<CborDecodeReplacer>,
+}
+
+macro_rules! decode_err {
+    ($msg:literal $(, $args:expr)* $(,)?) => {
+        Err(minicbor::decode::Error::message(format_args!($msg $(, $args)*)))
+    };
 }
 
 impl minicbor::decode::Decode<'_, DecodingContext> for VariantWrapper {
@@ -430,9 +708,7 @@ impl minicbor::decode::Decode<'_, DecodingContext> for VariantWrapper {
                 }
                 Ok(Self(ctx.replacer.bind().replace_packed_byte_array(array)))
             }
-            Type::F16 => Err(minicbor::decode::Error::message(
-                "CBOR does not support half-precision floats",
-            )),
+            Type::F16 => decode_err!("CBOR does not support half-precision floats",),
             Type::F32 => {
                 let v = d.f32()?;
                 Ok(Self(ctx.replacer.bind().replace_float(v as f64)))
@@ -473,7 +749,7 @@ impl minicbor::decode::Decode<'_, DecodingContext> for VariantWrapper {
                 Ok(Self(ctx.replacer.bind().replace_tagged(tag, value)))
             }
             Type::Simple | Type::Break | Type::Unknown(_) => {
-                Err(minicbor::decode::Error::message("unknown value received"))
+                decode_err!("unknown value received")
             }
         }
     }
@@ -491,6 +767,14 @@ pub struct PackedByteArrayWriter {
     buffer: PackedByteArray,
     /// The number of bytes written to the buffer so far.
     len: usize,
+}
+
+impl PackedByteArrayWriter {
+    /// Returns a slice over the part of the buffer that has been written to.
+    #[inline]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.buffer.as_slice()[..self.len]
+    }
 }
 
 impl From<PackedByteArray> for PackedByteArrayWriter {
